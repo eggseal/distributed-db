@@ -17,7 +17,7 @@ def validate_index(index: str) -> bool:
     Parameters:
     - index (str): The index string to validate.
     """
-    return index.isdigit() and index >= 0
+    return index.isdigit() and int(index) >= 0
 
 def extract_components(cmd: list[str], host: str, port: int):
     """
@@ -37,12 +37,12 @@ def extract_components(cmd: list[str], host: str, port: int):
             raise ValueError(f"Invalid index: '{index}'. Must be a number.")
 
         message = " ".join(cmd[2:])
-        origin = f'{host}:{port}'
+        origin = f'http://{host}:{port}'
         if message.startswith('"') and message.endswith('"'):
             message = message[1:-1]
 
         headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
-        data = {'action': action, 'index': index, 'message': message or ""}
+        data = {'action': action, 'index': index, 'message': message}
         return (origin, headers, data)
     except ValueError as ve:
         console.error(f"Error in input: {ve}")
@@ -96,7 +96,7 @@ def main(argc: int, argv: list[str]):
 
     # Request once if the command is on args
     if comm_end <= argc:
-        send_command(argv[comm_idx:comm_end], host, port)
+        send_command(argv[comm_idx:], host, port)
         return
     # Infinitely ask for the command and send it on a loop otherwise
     while True:
@@ -118,6 +118,7 @@ if __name__ == "__main__":
     Examples sys.argv:
     - python client.py -h http://192.168.100.102 -p 8000 --cmd /write 1 "Hey Jhony"
     - python client.py -h localhost -p 5000 --cmd /read 1
+    - python client.py -h localhost -p 5000 --cmd
     """
     console.basicConfig(level=console.INFO)
     main(len(sys.argv), sys.argv)

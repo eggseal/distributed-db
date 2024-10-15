@@ -23,7 +23,7 @@
    ```
 1. Compila el archivo de protocolo
    ```sh
-   python -m grpcio-tools.protoc -I. --python_out=. --grpc_python_out=. ./message.proto
+   python -m grpc_tools.protoc -I. --python_out=./bin --grpc_python_out=./bin ./message.proto
    ```
 1. Crea los enlaces simbolicos para cada proceso
    ```sh
@@ -54,7 +54,6 @@
    ```
 1. Compila el archivo de protocolo
    ```batch
-   python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. message.proto
    python -m grpc_tools.protoc -I. --python_out=./bin --grpc_python_out=./bin ./message.proto
    ```
 1. Crea los enlaces simbolicos para cada proceso en un proceso de Command Prompt con permisos de administrador

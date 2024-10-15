@@ -1,0 +1,46 @@
+syntax = "proto3";
+package message;
+
+message Empty {}
+
+service Proxy {
+    rpc register_node(RegisterNodeRequest) returns (RegisterNodeResponse);
+    rpc declare_leader(RegisterNodeRequest) returns (DeclareLeaderResponse);
+}
+
+service Node {
+    rpc read_line(ReadLineRequest) returns (ReadLineResponse);
+    rpc write_line(WriteLineRequest) returns (WriteLineResponse);
+    rpc update_list(RegisterNodeRequest) returns (RegisterNodeResponse);
+    rpc signal_heartbeat(Empty) returns (Empty);
+}
+
+// Registration messages
+message RegisterNodeRequest {
+    string address = 1;
+}
+message RegisterNodeResponse {
+    bool registered = 1;
+    bool leader = 2;
+    string leader_address = 3;
+}
+message DeclareLeaderResponse {
+    repeated string addresses = 1;
+}
+
+// Read/Write messages
+message ReadLineRequest {
+    uint64 line = 1;
+}
+message ReadLineResponse {
+    bool success = 1;
+    string content = 2;
+}
+message WriteLineRequest {
+    uint64 line = 1;
+    string content = 2;
+}
+message WriteLineResponse {
+    bool success = 1;
+}
+
