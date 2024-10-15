@@ -83,3 +83,7 @@ Desktop.ini
 *.bak
 *.tmp
 *.old
+
+# Resource files
+node/resources/*
+!node/resources/__placeholder__
