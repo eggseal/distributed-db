@@ -71,7 +71,23 @@ class ProxyServicer(message_pb2_grpc.ProxyServicer):
                 leader = list(nodes.queue).index(address)
                 is_leader = True
         console.info(f"Current nodes: {list(nodes.queue)}")  # Print a safe copy of the queue
-        return message_pb2.RegisterNodeResponse(registered=is_registered, leader=is_leader, leader_address = list(nodes.queue)[leader])
+        return message_pb2.RegisterNodeResponse(registered=is_registered, leader=is_leader, leader_address=list(nodes.queue)[leader])
+    
+    def unregister_node(self, request, context):
+        global leader
+        address = request.address
+        console.info(f"Received unregistration from {address}")
+
+        # Remove the node from the queue if it exists
+        if address in list(nodes.queue):
+            nodes.queue.remove(address)
+            console.info(f"Node {address} unregistered successfully.")
+            # Update leader if the leader is shutting down
+            if leader != -1 and list(nodes.queue)[leader] == address:
+                leader = -1  # Reset leader if it's the shutting down node
+                console.info("Leader has shut down; leader reset.")
+
+        return message_pb2.UnregisterNodeResponse(success=True)
     
     def declare_leader(self, request, context):
         global leader
@@ -82,7 +98,7 @@ class ProxyServicer(message_pb2_grpc.ProxyServicer):
         except ValueError:
             console.error(f"Node {address} not found in the node list.")
             return message_pb2.DeclareLeaderResponse(addresses=list())
-        return message_pb2.DeclareLeaderResponse(addresses=list(nodes))
+        return message_pb2.DeclareLeaderResponse(addresses=list(nodes.queue))
     
 @app.route('/', methods=['GET'])
 def handle_read():
@@ -118,7 +134,7 @@ def handle_write():
         console.error(f"Invalid request: {e}")
         return { 'status': BAD_REQUEST }, BAD_REQUEST
 
-    node = list(nodes.queue)[leader] or None
+    node = list(nodes.queue)[leader] if leader != -1 else None
     console.info(f"Current leader: {leader}") 
     if node is None:
         return { 'status': SERVICE_UNAVAILABLE }, SERVICE_UNAVAILABLE

@@ -2,27 +2,31 @@
 import threading
 from concurrent import futures
 from queue import Queue
-from multiprocessing import Semaphore, Lock
 # General
 import sys, os, time
 import logging as console
 # gRPC
 import grpc, message_pb2, message_pb2_grpc
+import grpc._server
 
 FORMAT = '[%(asctime)s][%(levelname)s]::%(name)s >> %(message)s'
 DATEFMT = '%H:%M:%S'
 
-leader = False
-leader_address = ""
-heartbeat_lock = Lock()
-heartcheck_lock = Lock()
-heartupdate_semaphore = Semaphore(1)
-last_heartbeat = 0
+# Raft states
+FOLLOWER = "follower"
+CANDIDATE = "candidate"
+LEADER = "leader"
+
 nodes = Queue()
 
 class NodeServicer(message_pb2_grpc.NodeServicer):
     path: str
     address: str
+    term: int
+    state: str
+    votes: int
+    last_heartbeat: float
+    leader_address: str
 
     def __init__(self, path: str, address: str) -> None:
         self.path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'resources', path)
@@ -31,7 +35,28 @@ class NodeServicer(message_pb2_grpc.NodeServicer):
             open(self.path, 'x')
         except FileExistsError:
             pass
+
+        self.term = 0
+        self.state = FOLLOWER
+        self.votes = 0
+        self.last_heartbeat = time.time()
+        self.leader_address = ""
         console.info(f'Node servicer using file path: {self.path} on address: {self.address}')
+
+    # Raft heartbeat
+    def append_entries(self, request, context):
+        self.last_heartbeat = time.time()
+        self.state = FOLLOWER
+        return message_pb2.Empty()
+
+    def request_vote(self, request, context):
+        candidate_term = request.term
+        if candidate_term > self.term:
+            self.term = candidate_term
+            self.state = FOLLOWER
+            return message_pb2.VoteResponse(vote_granted=True, term=self.term)
+        else:
+            return message_pb2.VoteResponse(vote_granted=False, term=self.term)
 
     def read_line(self, request, context):
         line = request.line
@@ -60,15 +85,13 @@ class NodeServicer(message_pb2_grpc.NodeServicer):
             file.seek(0)
             file.writelines(lines)
         
-        console.info(f'Am I leader? {leader}')
-        if leader:
-            console.info(list(nodes.queue))
-            req = message_pb2.WriteLineRequest(line=line, content=content)
-            for address in list(nodes.queue):
-                if address == self.address: continue
-                with grpc.insecure_channel(address) as channel:
+        # Propagate writes if leader
+        if self.state == LEADER:
+            for node_address in list(nodes.queue):
+                if node_address == self.address: continue
+                with grpc.insecure_channel(node_address) as channel:
                     stub = message_pb2_grpc.NodeStub(channel)
-                    stub.write_line(req)
+                    stub.write_line(request)
         return message_pb2.WriteLineResponse(success=True)
 
     def update_list(self, request, context):
@@ -77,77 +100,77 @@ class NodeServicer(message_pb2_grpc.NodeServicer):
         if address not in list(nodes.queue):
             nodes.put(address)
         return message_pb2.RegisterNodeResponse(registered=True, leader=False, leader_address=self.address)
-    
-    def signal_heartbeat(self, request, context):
-        global last_heartbeat
 
-        heartupdate_semaphore.acquire()
-        last_heartbeat = time.time()
-        heartupdate_semaphore.release()
+# Raft Leader Election Logic
+def start_election(node: NodeServicer, proxy_address: str):
+    node.state = CANDIDATE
+    node.term += 1
+    node.votes = 1  # Vote for itself
+    console.info(f'Starting election. Term={node.term}')
 
-        console.info('Received hearbeat from leader')
-        return message_pb2.Empty()
+    for node_address in list(nodes.queue):
+        if node_address == node.address:
+            continue
+        with grpc.insecure_channel(node_address) as channel:
+            stub = message_pb2_grpc.NodeStub(channel)
+            request = message_pb2.VoteRequest(candidate_address=node.address, term=node.term)
+            try:
+                response = stub.request_vote(request)
+                if response.vote_granted:
+                    node.votes += 1
+            except grpc.RpcError:
+                console.error(f"Failed to contact node {node_address}")
 
-def register_node(proxy: str, address: str, retries=3, delay=5):
-    global leader_address
-    for attempt in range(retries):
-        try:
-            with grpc.insecure_channel(proxy) as channel:
-                stub = message_pb2_grpc.ProxyStub(channel)
-                req = message_pb2.RegisterNodeRequest(address=address)
-                res = stub.register_node(req)
-            if not res.leader:
-                leader_address = res.leader_address
-            if res.registered:
-                return res.leader
-            else:
-                raise Exception("Failed registering with proxy")
-        except Exception as e:
-            console.error(f"Attempt {attempt+1}/{retries} failed: {e}")
-            if attempt < retries - 1:
-                time.sleep(delay)
-    console.error(f"Failed to register node after {retries} attempts")
-    exit(1)
+    # If this node wins the majority of votes, it becomes the leader
+    if node.votes > (nodes.qsize() // 2):
+        console.info(f'{node.address} is elected leader for term {node.term}')
+        node.state = LEADER
+        node.leader_address = node.address
 
-def signal_dead_leader():
-    console.warning('Leader is dead')
-    pass
+        with grpc.insecure_channel(proxy_address) as channel:
+            stub = message_pb2_grpc.ProxyStub(channel)
+            req = message_pb2.RegisterNodeRequest(address=node.address)
+            res = stub.declare_leader(req)
+            console.info(res.addresses)
+            for address in res.addresses:
+                if address in list(nodes.queue): continue
+                nodes.put(address)
 
-def start_heartbeat(add):
-    req = message_pb2.Empty()
+def check_heartbeat(node: NodeServicer, proxy_address: str):
     while True:
-        if not leader: heartbeat_lock.acquire()
-        for address in list(nodes.queue):
-            if address == add: continue
-            with grpc.insecure_channel(address) as channel:
-                stub = message_pb2_grpc.NodeStub(channel)
-                stub.signal_heartbeat(req)
+        if node.state == LEADER:
+            for node_address in list(nodes.queue):
+                if node_address == node.address: continue
+                with grpc.insecure_channel(node_address) as channel:
+                    stub = message_pb2_grpc.NodeStub(channel)
+                    req = message_pb2.Empty()
+                    stub.append_entries(req)
+            continue
+        if node.state != LEADER and time.time() - node.last_heartbeat > 3:
+            start_election(node, proxy_address)
+        console.info(node.last_heartbeat)
         time.sleep(1)
 
-def detect_heartbeat():
-    while True:
-        if leader: heartcheck_lock.acquire()
-        heartupdate_semaphore.acquire()
-        if time.time() - last_heartbeat >= 3:
-            heartupdate_semaphore.release()
-            signal_dead_leader()
-        else:
-            heartupdate_semaphore.release()
-        time.sleep(1)
+def register_with_proxy(proxy_address: str, node_address: str):
+    with grpc.insecure_channel(proxy_address) as channel:
+        stub = message_pb2_grpc.ProxyStub(channel)
+        request = message_pb2.RegisterNodeRequest(address=node_address)
+        response = stub.register_node(request)
+        console.info(f"Registered with proxy. Leader: {response.leader_address}")
+        if response.leader_address:
+            nodes.put(response.leader_address)
 
-def serve_grpc(address: str, filepath: str):
+def serve_grpc(address: str, filepath: str) -> tuple[grpc._server._Server, NodeServicer]:
     add_p = address.split(':')[1]
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    message_pb2_grpc.add_NodeServicer_to_server(NodeServicer(filepath, address), server)
+    node_servicer = NodeServicer(filepath, address)
+    message_pb2_grpc.add_NodeServicer_to_server(node_servicer, server)
     server.add_insecure_port(f'[::]:{add_p}')
     console.info(f"gRPC server started on port {add_p}")
-    server.start()
-    server.wait_for_termination()
-        
-# python node.py -proxy 127.0.0.1:50051 -p 50052 -filename "a file"  
+    return (server, node_servicer)
+    
 def main(argc: int, argv: list[str]):
-    global leader
     try:
         proxy = argv[argv.index('-proxy') + 1]
         address = argv[argv.index('-address') + 1]
@@ -159,16 +182,14 @@ def main(argc: int, argv: list[str]):
     except: file = "file.txt"
     console.info(f'Using address GRPC={address}, Connecting to proxy={proxy}, Using file=./resources/{file}')
 
-    leader = register_node(proxy, address)
-    create_beat = threading.Thread(target=start_heartbeat, args=[address])
-    detect_beat = threading.Thread(target=detect_heartbeat)
+    register_with_proxy(proxy, address)
+    server, node_servicer = serve_grpc(address, file)
 
-    create_beat.start()
-    detect_beat.start()
-    serve_grpc(address, file)
-
-    create_beat.join()
-    detect_beat.join()
+    heartbeat_thread = threading.Thread(target=check_heartbeat, args=[node_servicer, proxy])
+    heartbeat_thread.start()
+    server.start()
+    server.wait_for_termination()
+    heartbeat_thread.join()
 
 if __name__ == "__main__":
     console.basicConfig(level=console.INFO, handlers=[console.StreamHandler()], format=FORMAT, datefmt=DATEFMT)

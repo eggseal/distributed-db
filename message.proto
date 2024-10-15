@@ -6,13 +6,15 @@ message Empty {}
 service Proxy {
     rpc register_node(RegisterNodeRequest) returns (RegisterNodeResponse);
     rpc declare_leader(RegisterNodeRequest) returns (DeclareLeaderResponse);
+    rpc unregister_node(RegisterNodeRequest) returns (UnregisterNodeResponse);
 }
 
 service Node {
     rpc read_line(ReadLineRequest) returns (ReadLineResponse);
     rpc write_line(WriteLineRequest) returns (WriteLineResponse);
     rpc update_list(RegisterNodeRequest) returns (RegisterNodeResponse);
-    rpc signal_heartbeat(Empty) returns (Empty);
+    rpc request_vote(VoteRequest) returns (VoteResponse);
+    rpc append_entries(Empty) returns (Empty);
 }
 
 // Registration messages
@@ -24,8 +26,22 @@ message RegisterNodeResponse {
     bool leader = 2;
     string leader_address = 3;
 }
+message UnregisterNodeResponse {
+    bool success = 1;
+}
 message DeclareLeaderResponse {
     repeated string addresses = 1;
+}
+
+// RAFT voting messages
+message VoteRequest {
+    string candidate_address = 1;
+    uint64 term = 2;
+}
+
+message VoteResponse {
+    bool vote_granted = 1;
+    uint64 term = 2;
 }
 
 // Read/Write messages
@@ -43,4 +59,3 @@ message WriteLineRequest {
 message WriteLineResponse {
     bool success = 1;
 }
-
