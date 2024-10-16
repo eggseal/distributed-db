@@ -100,6 +100,9 @@ class NodeServicer(message_pb2_grpc.NodeServicer):
         if address not in list(nodes.queue):
             nodes.put(address)
         return message_pb2.RegisterNodeResponse(registered=True, leader=False, leader_address=self.address)
+    
+    def confirm_alive(self, request, context):
+        return message_pb2.Empty()
 
 # Raft Leader Election Logic
 def start_election(node: NodeServicer, proxy_address: str):
@@ -133,7 +136,7 @@ def start_election(node: NodeServicer, proxy_address: str):
             res = stub.declare_leader(req)
             console.info(res.addresses)
             for address in res.addresses:
-                if address in list(nodes.queue): continue
+                if address in list(nodes.queue) or address == node.address: continue
                 nodes.put(address)
 
 def check_heartbeat(node: NodeServicer, proxy_address: str):
@@ -144,7 +147,10 @@ def check_heartbeat(node: NodeServicer, proxy_address: str):
                 with grpc.insecure_channel(node_address) as channel:
                     stub = message_pb2_grpc.NodeStub(channel)
                     req = message_pb2.Empty()
-                    stub.append_entries(req)
+                    try:
+                        stub.append_entries(req)
+                    except:
+                        pass
             continue
         if node.state != LEADER and time.time() - node.last_heartbeat > 3:
             start_election(node, proxy_address)

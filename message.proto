@@ -15,6 +15,7 @@ service Node {
     rpc update_list(RegisterNodeRequest) returns (RegisterNodeResponse);
     rpc request_vote(VoteRequest) returns (VoteResponse);
     rpc append_entries(Empty) returns (Empty);
+    rpc confirm_alive(Empty) returns (Empty);
 }
 
 // Registration messages

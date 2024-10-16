@@ -90,14 +90,27 @@ class ProxyServicer(message_pb2_grpc.ProxyServicer):
         return message_pb2.UnregisterNodeResponse(success=True)
     
     def declare_leader(self, request, context):
-        global leader
+        global leader, nodes
         address = request.address
         # Declare the new leader
         try:
             leader = list(nodes.queue).index(address)
+            res_address = Queue()
+            while not nodes.empty():
+                node_address = nodes.get()
+                with grpc.insecure_channel(node_address) as channel:
+                    stub = message_pb2_grpc.NodeStub(channel)
+                    req = message_pb2.Empty()
+                    try:
+                        stub.confirm_alive(req)
+                        res_address.put(node_address)
+                    except:
+                        console.warning(f'Removing node: {node_address}')
+            nodes = res_address
         except ValueError:
             console.error(f"Node {address} not found in the node list.")
             return message_pb2.DeclareLeaderResponse(addresses=list())
+        console.info(list(nodes.queue))
         return message_pb2.DeclareLeaderResponse(addresses=list(nodes.queue))
     
 @app.route('/', methods=['GET'])
